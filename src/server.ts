@@ -1,0 +1,89 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { Config } from "./config.js";
+import type { Provider } from "./providers/base.js";
+import { handleHealth } from "./routes/health.js";
+import { handleModels } from "./routes/models.js";
+import { handleMessages } from "./routes/messages.js";
+
+function checkAuth(req: IncomingMessage, config: Config): boolean {
+  if (!config.authToken) return true;
+
+  const authHeader = req.headers["authorization"] ?? "";
+  const apiKey = req.headers["x-api-key"] as string | undefined;
+
+  if (authHeader.startsWith("Bearer ")) {
+    return timingSafeEqual(authHeader.slice(7), config.authToken);
+  }
+  if (apiKey) {
+    return timingSafeEqual(apiKey, config.authToken);
+  }
+  return false;
+}
+
+/** Constant-time string comparison */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+export function createApp(
+  config: Config,
+  providers: Map<string, Provider>,
+) {
+  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const { method, url } = req;
+    const path = url?.split("?")[0] ?? "/";
+
+    // CORS preflight
+    if (method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, x-api-key, Content-Type",
+      });
+      res.end();
+      return;
+    }
+
+    // Auth check (skip for health)
+    if (path !== "/health" && !checkAuth(req, config)) {
+      sendJson(res, 401, {
+        error: { type: "authentication_error", message: "Invalid API key" },
+      });
+      return;
+    }
+
+    // Routing
+    if (method === "GET" && path === "/health") {
+      return handleHealth(req, res);
+    }
+
+    if (method === "GET" && path === "/v1/models") {
+      return handleModels(req, res, config, providers);
+    }
+
+    if (method === "POST" && path === "/v1/messages") {
+      return handleMessages(req, res, config, providers);
+    }
+
+    // Count tokens — return a simple estimate (needed by Claude Code)
+    if (method === "POST" && path === "/v1/messages/count_tokens") {
+      sendJson(res, 200, { input_tokens: 0 });
+      return;
+    }
+
+    // 404
+    sendJson(res, 404, {
+      error: { type: "not_found", message: `Not found: ${method} ${path}` },
+    });
+  });
+}
