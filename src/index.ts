@@ -4,6 +4,7 @@ import { ZhipuProvider } from "./providers/zhipu.js";
 import { OpenCodeGoProvider } from "./providers/opencode-go.js";
 import { createApp } from "./server.js";
 import type { ProviderConfig, Config } from "./config.js";
+import type { Provider } from "./providers/base.js";
 
 const config = loadConfig(process.env);
 
@@ -34,39 +35,51 @@ function resolveProviderConfig(
   return resolved;
 }
 
-// Validate at least one provider API key is configured
-const hasAnyKey =
-  config.deepseek.apiKey || config.zhipu.apiKey || config.opencodeGo.apiKey;
+// Provider registry — add new providers here only
+const providerFactories: Array<{
+  id: string;
+  configKey: "deepseek" | "zhipu" | "opencodeGo";
+  factory: (cfg: ProviderConfig) => Provider;
+}> = [
+  {
+    id: "deepseek",
+    configKey: "deepseek",
+    factory: (cfg) => new DeepSeekProvider(cfg),
+  },
+  {
+    id: "zhipu",
+    configKey: "zhipu",
+    factory: (cfg) => new ZhipuProvider(cfg),
+  },
+  {
+    id: "opencode_go",
+    configKey: "opencodeGo",
+    factory: (cfg) => new OpenCodeGoProvider(cfg),
+  },
+];
 
-if (!hasAnyKey) {
+// Validate at least one provider API key is configured
+const configuredKeys = providerFactories
+  .map((f) => config[f.configKey].apiKey)
+  .filter(Boolean);
+
+if (configuredKeys.length === 0) {
   console.error(
-    "[cc-proxy] FATAL: At least one of DEEPSEEK_API_KEY, ZHIPU_API_KEY, or OPENCODE_API_KEY is required",
+    "[cc-proxy] FATAL: At least one provider API key is required (DEEPSEEK_API_KEY, ZHIPU_API_KEY, or OPENCODE_API_KEY)",
   );
   process.exit(1);
 }
 
-const providers = new Map();
+const providers = new Map<string, Provider>();
 const activeProviders: string[] = [];
 
-// DeepSeek
-if (config.deepseek.apiKey) {
-  const resolved = resolveProviderConfig(config.deepseek, config);
-  providers.set("deepseek", new DeepSeekProvider(resolved));
-  activeProviders.push("deepseek");
-}
-
-// Zhipu
-if (config.zhipu.apiKey) {
-  const resolved = resolveProviderConfig(config.zhipu, config);
-  providers.set("zhipu", new ZhipuProvider(resolved));
-  activeProviders.push("zhipu");
-}
-
-// OpenCode Go
-if (config.opencodeGo.apiKey) {
-  const resolved = resolveProviderConfig(config.opencodeGo, config);
-  providers.set("opencode_go", new OpenCodeGoProvider(resolved));
-  activeProviders.push("opencode_go");
+for (const { id, configKey, factory } of providerFactories) {
+  const providerConfig = config[configKey];
+  if (providerConfig.apiKey) {
+    const resolved = resolveProviderConfig(providerConfig, config);
+    providers.set(id, factory(resolved));
+    activeProviders.push(id);
+  }
 }
 
 const server = createApp(config, providers);

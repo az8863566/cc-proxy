@@ -13,6 +13,26 @@ export interface ResolvedModel {
   thinkingLevel?: string;
 }
 
+/** Provider metadata registry — single source of truth for routing. */
+export const PROVIDER_REGISTRY: Array<{
+  id: ProviderId;
+  aliases: string[];
+}> = [
+  { id: "deepseek", aliases: ["deepseek"] },
+  { id: "zhipu", aliases: ["zhipu", "glm"] },
+  { id: "opencode_go", aliases: ["opencode_go", "opencode"] },
+];
+
+const PROVIDER_IDS: ProviderId[] = PROVIDER_REGISTRY.map((p) => p.id);
+
+const PROVIDER_ALIAS_MAP: Record<string, ProviderId> = Object.fromEntries(
+  PROVIDER_REGISTRY.flatMap((p) => p.aliases.map((alias) => [alias, p.id])),
+);
+
+function normalizeProviderId(raw: string): ProviderId | null {
+  return PROVIDER_ALIAS_MAP[raw.toLowerCase()] ?? null;
+}
+
 /**
  * Resolve a Claude model name to a provider + model pair.
  *
@@ -64,19 +84,6 @@ export function resolveModel(
     temperature: tier.temperature,
     thinkingLevel: tier.thinkingLevel,
   };
-}
-
-const PROVIDER_IDS: ProviderId[] = ["deepseek", "zhipu", "opencode_go"];
-
-function normalizeProviderId(raw: string): ProviderId | null {
-  const map: Record<string, ProviderId> = {
-    deepseek: "deepseek",
-    zhipu: "zhipu",
-    glm: "zhipu",
-    opencode_go: "opencode_go",
-    opencode: "opencode_go",
-  };
-  return map[raw.toLowerCase()] ?? null;
 }
 
 /** Parse "provider/model" into {providerId, model}; if no "/", use default provider */

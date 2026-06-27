@@ -2,15 +2,41 @@ import { z } from "zod";
 
 const thinkingLevelSchema = z.enum(["off", "low", "high", "max"]);
 
-const providerConfig = z.object({
-  apiKey: z.string().min(1),
+export type ProviderConfig = z.infer<typeof providerConfig>;
+
+/** Shared provider config schema — extended per-provider for custom defaults. */
+const providerConfigBase = z.object({
+  apiKey: z.string().optional().default(""),
   baseUrl: z.string().url(),
-  defaultModel: z.string().min(1),
+  defaultModel: z.string(),
   thinkingLevel: thinkingLevelSchema.optional(),
   temperature: z.number().optional(),
 });
 
-export type ProviderConfig = z.infer<typeof providerConfig>;
+function providerModelSchema(defaultModel: string, baseUrl: string, tempMin = 0, tempMax = 2) {
+  return providerConfigBase.extend({
+    baseUrl: z.string().url().default(baseUrl),
+    defaultModel: z.string().default(defaultModel),
+    temperature: z.coerce.number().min(tempMin).max(tempMax).optional(),
+  });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const providerConfig = providerModelSchema("", "");
+
+/** Load a single provider's raw env values (5 fields). */
+function providerEnv(
+  prefix: string,
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  return {
+    apiKey: env[`${prefix}_API_KEY`],
+    baseUrl: env[`${prefix}_BASE_URL`],
+    defaultModel: env[`${prefix}_DEFAULT_MODEL`],
+    thinkingLevel: env[`${prefix}_THINKING_LEVEL`],
+    temperature: env[`${prefix}_TEMPERATURE`],
+  };
+}
 
 const configSchema = z.object({
   port: z.coerce.number().int().default(8082),
@@ -41,32 +67,22 @@ const configSchema = z.object({
 
   temperature: z.coerce.number().min(0).max(2).optional(),
 
-  deepseek: z.object({
-    apiKey: z.string().optional().default(""),
-    baseUrl: z.string().url().default("https://api.deepseek.com/anthropic"),
-    defaultModel: z.string().default("deepseek-v4-pro"),
-    thinkingLevel: thinkingLevelSchema.optional(),
-    temperature: z.coerce.number().min(0).max(2).optional(),
-  }),
+  deepseek: providerModelSchema(
+    "deepseek-v4-pro",
+    "https://api.deepseek.com/anthropic",
+  ),
 
-  zhipu: z.object({
-    apiKey: z.string().optional().default(""),
-    baseUrl: z.string().url().default("https://open.bigmodel.cn/api/paas/v4"),
-    defaultModel: z.string().default("glm-5.2"),
-    thinkingLevel: thinkingLevelSchema.optional(),
-    temperature: z.coerce.number().min(0.01).max(1).optional(),
-  }),
+  zhipu: providerModelSchema(
+    "glm-5.2",
+    "https://open.bigmodel.cn/api/paas/v4",
+    0.01,
+    1,
+  ),
 
-  opencodeGo: z.object({
-    apiKey: z.string().optional().default(""),
-    baseUrl: z
-      .string()
-      .url()
-      .default("https://opencode.ai/zen/go/v1"),
-    defaultModel: z.string().default("opencode/gpt-5.5"),
-    thinkingLevel: thinkingLevelSchema.optional(),
-    temperature: z.coerce.number().min(0).max(2).optional(),
-  }),
+  opencodeGo: providerModelSchema(
+    "opencode/gpt-5.5",
+    "https://opencode.ai/zen/go/v1",
+  ),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -95,25 +111,11 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   raw.thinkingLevel = env.THINKING_LEVEL;
   raw.temperature = env.TEMPERATURE;
 
-  // DeepSeek
-  raw.deepseek = {
-    apiKey: env.DEEPSEEK_API_KEY,
-    baseUrl: env.DEEPSEEK_BASE_URL,
-    defaultModel: env.DEEPSEEK_DEFAULT_MODEL,
-    thinkingLevel: env.DEEPSEEK_THINKING_LEVEL,
-    temperature: env.DEEPSEEK_TEMPERATURE,
-  };
+  raw.deepseek = providerEnv("DEEPSEEK", env);
 
-  // Zhipu
-  raw.zhipu = {
-    apiKey: env.ZHIPU_API_KEY,
-    baseUrl: env.ZHIPU_BASE_URL,
-    defaultModel: env.ZHIPU_DEFAULT_MODEL,
-    thinkingLevel: env.ZHIPU_THINKING_LEVEL,
-    temperature: env.ZHIPU_TEMPERATURE,
-  };
+  raw.zhipu = providerEnv("ZHIPU", env);
 
-  // OpenCode Go
+  // OpenCode Go uses a mix of OPENCODE_ and OPENCODE_GO_ prefixes
   raw.opencodeGo = {
     apiKey: env.OPENCODE_API_KEY,
     baseUrl: env.OPENCODE_GO_BASE_URL,
