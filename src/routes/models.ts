@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Provider } from "../providers/base.js";
 import type { Config } from "../config.js";
 import { resolveModel } from "../model-router.js";
+import { sendJson } from "../server.js";
 
 export async function handleModels(
   _req: IncomingMessage,
@@ -53,6 +54,5 @@ export async function handleModels(
     });
   }
 
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ data: allModels, object: "list" }));
+  sendJson(res, 200, { data: allModels, object: "list" });
 }

@@ -5,6 +5,19 @@ import { handleHealth } from "./routes/health.js";
 import { handleModels } from "./routes/models.js";
 import { handleMessages } from "./routes/messages.js";
 
+type RouteHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: Config,
+  providers: Map<string, Provider>,
+) => void | Promise<void>;
+
+/** Shared JSON response helper — used by routes for consistency. */
+export function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
 function checkAuth(req: IncomingMessage, config: Config): boolean {
   if (!config.authToken) return true;
 
@@ -30,10 +43,18 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(body));
-}
+/** Route registry: "METHOD /path" → handler */
+const routes = new Map<string, RouteHandler>([
+  ["GET /health", handleHealth],
+  ["GET /v1/models", handleModels],
+  ["POST /v1/messages", handleMessages],
+]);
+
+/** Count tokens — returns a simple estimate (needed by Claude Code). */
+const handleCountTokens: RouteHandler = (_req, res) => {
+  sendJson(res, 200, { input_tokens: 0 });
+};
+routes.set("POST /v1/messages/count_tokens", handleCountTokens);
 
 export function createApp(
   config: Config,
@@ -62,23 +83,11 @@ export function createApp(
       return;
     }
 
-    // Routing
-    if (method === "GET" && path === "/health") {
-      return handleHealth(req, res);
-    }
-
-    if (method === "GET" && path === "/v1/models") {
-      return handleModels(req, res, config, providers);
-    }
-
-    if (method === "POST" && path === "/v1/messages") {
-      return handleMessages(req, res, config, providers);
-    }
-
-    // Count tokens — return a simple estimate (needed by Claude Code)
-    if (method === "POST" && path === "/v1/messages/count_tokens") {
-      sendJson(res, 200, { input_tokens: 0 });
-      return;
+    // Route dispatch
+    const routeKey = `${method} ${path}`;
+    const handler = routes.get(routeKey);
+    if (handler) {
+      return handler(req, res, config, providers);
     }
 
     // 404

@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { resolveModel } from "../model-router.js";
 import { errorEvent } from "../sse.js";
 import { insertEgress } from "../db.js";
+import { sendJson } from "../server.js";
 
 interface EgressStats {
   inputTokens?: number;
@@ -53,8 +54,7 @@ export async function handleMessages(
   try {
     body = await readBody(req);
   } catch {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { type: "invalid_request_error", message: "Failed to read request body" } }));
+    sendJson(res, 400, { error: { type: "invalid_request_error", message: "Failed to read request body" } });
     return;
   }
 
@@ -62,20 +62,17 @@ export async function handleMessages(
   try {
     request = JSON.parse(body) as AnthropicRequest;
   } catch {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { type: "invalid_request_error", message: "Invalid JSON" } }));
+    sendJson(res, 400, { error: { type: "invalid_request_error", message: "Invalid JSON" } });
     return;
   }
 
   // Validate required fields
   if (!request.model) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { type: "invalid_request_error", message: "Missing 'model' field" } }));
+    sendJson(res, 400, { error: { type: "invalid_request_error", message: "Missing 'model' field" } });
     return;
   }
   if (!request.messages || request.messages.length === 0) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { type: "invalid_request_error", message: "messages cannot be empty" } }));
+    sendJson(res, 400, { error: { type: "invalid_request_error", message: "messages cannot be empty" } });
     return;
   }
 
@@ -85,13 +82,12 @@ export async function handleMessages(
   if (!providers.has(resolved.providerId)) {
     // Explicit provider prefix (e.g. "deepseek/xxx") → error, don't silently reroute
     if (resolved.explicitProvider) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
+      sendJson(res, 400, {
         error: {
           type: "invalid_request_error",
           message: `Provider '${resolved.providerId}' is not configured. Available: ${[...providers.keys()].join(", ")}`,
         },
-      }));
+      });
       return;
     }
     // Tier-based or unknown model → fall back to default provider
@@ -105,13 +101,12 @@ export async function handleMessages(
 
   const provider = providers.get(resolved.providerId);
   if (!provider) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
+    sendJson(res, 400, {
       error: {
         type: "invalid_request_error",
         message: `Unknown provider: ${resolved.providerId}`,
       },
-    }));
+    });
     return;
   }
 
