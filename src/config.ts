@@ -125,11 +125,5 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   };
 
   const parsed = configSchema.parse(raw);
-
-  // Zhipu temperature clamp (must be > 0)
-  if (parsed.zhipu.temperature !== undefined && parsed.zhipu.temperature <= 0) {
-    parsed.zhipu.temperature = 0.01;
-  }
-
   return parsed;
 }
