@@ -1,6 +1,7 @@
 export interface AnthropicMessage {
   role: string;
   content: unknown;
+  reasoning_content?: string;
 }
 
 export interface AnthropicRequest {

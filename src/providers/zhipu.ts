@@ -23,7 +23,7 @@ export class ZhipuProvider implements Provider {
     const thinkingEnabled = thinkingLevel !== undefined ? thinkingLevel !== "off" : true;
 
     const openaiBody = anthropicToOpenAI(
-      { ...request as unknown as Record<string, unknown>, model: this.config.defaultModel },
+      { ...request, model: this.config.defaultModel },
       { thinkingEnabled },
     );
 

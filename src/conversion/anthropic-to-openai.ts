@@ -4,6 +4,8 @@
  * Reference: free-claude-code's AnthropicToOpenAIConverter (simplified).
  */
 
+import type { AnthropicMessage, AnthropicRequest } from "../providers/base.js";
+
 interface AnthropicBlock {
   type: string;
   text?: string;
@@ -16,20 +18,11 @@ interface AnthropicBlock {
   source?: unknown;
 }
 
-interface AnthropicMessage {
-  role: string;
-  content: unknown; // string | AnthropicBlock[] at runtime
-  reasoning_content?: string;
-}
-
 interface AnthropicTool {
   name?: string;
   description?: string;
   input_schema?: Record<string, unknown>;
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnthropicRequest = Record<string, any>;
 
 interface OpenAIMessage {
   role: string;
@@ -227,7 +220,7 @@ function convertTools(tools: AnthropicTool[]): OpenAITool[] {
  * Convert Anthropic Messages request → OpenAI Chat Completions request body.
  */
 export function anthropicToOpenAI(
-  request: Record<string, unknown>,
+  request: AnthropicRequest,
   options: {
     thinkingEnabled?: boolean;
     reasoningEffort?: string;
@@ -242,8 +235,7 @@ export function anthropicToOpenAI(
   }
 
   // Convert each message
-  const reqMessages = (request.messages as AnthropicMessage[]) ?? [];
-  for (const msg of reqMessages) {
+  for (const msg of request.messages) {
     const content = msg.content;
 
     if (typeof content === "string") {
@@ -268,16 +260,16 @@ export function anthropicToOpenAI(
   }
 
   const body: OpenAIChatRequest = {
-    model: (request.model as string) ?? "",
+    model: request.model,
     messages,
-    max_tokens: request.max_tokens as number | undefined,
+    max_tokens: request.max_tokens,
     stream: true,
   };
 
-  if (request.temperature !== undefined) body.temperature = request.temperature as number;
-  if (request.top_p !== undefined) body.top_p = request.top_p as number;
+  if (request.temperature !== undefined) body.temperature = request.temperature;
+  if (request.top_p !== undefined) body.top_p = request.top_p;
   if (Array.isArray(request.stop_sequences) && request.stop_sequences.length) {
-    body.stop = request.stop_sequences as string[];
+    body.stop = request.stop_sequences;
   }
   if (Array.isArray(request.tools) && request.tools.length) {
     body.tools = convertTools(request.tools as AnthropicTool[]);
