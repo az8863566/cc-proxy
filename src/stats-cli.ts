@@ -18,8 +18,8 @@ function parseArgs(): { since?: string; until?: string; byModel: boolean } {
   return result;
 }
 
-function pad(n: number): string {
-  return n.toLocaleString();
+function pad(n: number | null): string {
+  return (n ?? 0).toLocaleString();
 }
 
 const filter = parseArgs();
@@ -28,7 +28,7 @@ if (filter.byModel) {
   const rows = queryStats(filter);
   console.log("By Model:");
   for (const r of rows) {
-    console.log(`  ${r.gateway_model!.padEnd(32)} Input: ${pad(r.input_tokens).padStart(12)}  Output: ${pad(r.output_tokens).padStart(12)}`);
+    console.log(`  ${(r.gateway_model ?? "unknown").padEnd(32)} Input: ${pad(r.input_tokens).padStart(12)}  Output: ${pad(r.output_tokens).padStart(12)}`);
   }
 } else {
   const rows = queryStats(filter);
