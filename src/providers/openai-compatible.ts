@@ -1,4 +1,4 @@
-import type { Provider, ProviderOverrides, AnthropicRequest } from "./base.js";
+import type { Provider, ProviderOverrides, AnthropicRequest, Usage, StreamHandle } from "./base.js";
 import type { ProviderConfig } from "../config.js";
 import { anthropicToOpenAI } from "../conversion/anthropic-to-openai.js";
 import type { OpenAIChatRequest } from "../conversion/anthropic-to-openai.js";
@@ -23,59 +23,67 @@ export abstract class OpenAICompatibleProvider implements Provider {
 
   // ── Provider interface ──────────────────────────────────────────
 
-  async *streamResponse(
+  streamResponse(
     request: AnthropicRequest,
     signal?: AbortSignal,
     overrides?: ProviderOverrides,
-  ): AsyncIterable<string> {
-    const thinkingLevel = overrides?.thinkingLevel ?? this.config.thinkingLevel;
-    const thinkingEnabled = thinkingLevel !== undefined ? thinkingLevel !== "off" : true;
+  ): StreamHandle {
+    let resolveUsage!: (u: Usage) => void;
+    const usage = new Promise<Usage>((resolve) => { resolveUsage = resolve; });
 
-    const openaiBody = anthropicToOpenAI(
-      { ...request, model: this.config.defaultModel },
-      { thinkingEnabled },
-    );
+    const self = this;
+    async function* events(): AsyncGenerator<string> {
+      const thinkingLevel = overrides?.thinkingLevel;
+      const thinkingEnabled = thinkingLevel !== undefined ? thinkingLevel !== "off" : true;
 
-    this.applyTemperature(openaiBody, overrides);
+      const openaiBody = anthropicToOpenAI(request, { thinkingEnabled });
 
-    const upstreamBody = this.buildUpstreamBody(
-      openaiBody,
-      thinkingEnabled,
-      thinkingLevel,
-    );
+      self.applyTemperature(openaiBody, overrides);
 
-    const url = `${this.config.baseUrl}/chat/completions`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify(upstreamBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(
-        `${this.providerName} upstream error ${response.status}: ${text.slice(0, 500)}`,
+      const upstreamBody = self.buildUpstreamBody(
+        openaiBody,
+        thinkingEnabled,
+        thinkingLevel,
       );
+
+      const bodyStr = JSON.stringify(upstreamBody);
+      const estimatedInputTokens = Math.max(1, Math.ceil(bodyStr.length / 4));
+
+      const url = `${self.config.baseUrl}/chat/completions`;
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${self.config.apiKey}`,
+        },
+        body: bodyStr,
+        signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(
+          `${self.providerName} upstream error ${response.status}: ${text.slice(0, 500)}`,
+        );
+      }
+
+      const result = streamOpenAIResponse(
+        response,
+        request.model,
+        thinkingEnabled,
+        estimatedInputTokens,
+      );
+
+      yield* result.events;
+      resolveUsage(await result.usage);
     }
 
-    if (!response.body) {
-      throw new Error(`${this.providerName} returned empty response body`);
-    }
-
-    yield* streamOpenAIResponse(
-      response,
-      this.config.defaultModel,
-      thinkingEnabled,
-    );
+    return { events: events(), usage };
   }
 
   async listModels(): Promise<string[]> {
-    return [this.config.defaultModel];
+    return [];
   }
 
   async checkHealth(): Promise<boolean> {
@@ -89,7 +97,7 @@ export abstract class OpenAICompatibleProvider implements Provider {
             Authorization: `Bearer ${this.config.apiKey}`,
           },
           body: JSON.stringify({
-            model: this.config.defaultModel,
+            model: "health-check",
             messages: [{ role: "user", content: "ping" }],
             max_tokens: 1,
           }),
@@ -103,14 +111,13 @@ export abstract class OpenAICompatibleProvider implements Provider {
 
   // ── Hooks for subclasses ────────────────────────────────────────
 
-  /** Apply provider-specific temperature logic (clamping, etc.). */
+  /** Apply temperature override if set. */
   protected applyTemperature(
     body: OpenAIChatRequest,
     overrides?: ProviderOverrides,
   ): void {
-    const temp = overrides?.temperature ?? this.config.temperature;
-    if (body.temperature === undefined && temp !== undefined) {
-      body.temperature = temp;
+    if (body.temperature === undefined && overrides?.temperature !== undefined) {
+      body.temperature = overrides.temperature;
     }
   }
 

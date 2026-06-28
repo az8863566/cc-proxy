@@ -39,8 +39,8 @@ function normalizeProviderId(raw: string): ProviderId | null {
  * Rules:
  * 1. "provider/model" format → direct routing (explicit)
  * 2. Gateway model IDs (prefix matching) → direct routing (explicit)
- * 3. Claude tier names (sonnet, opus, haiku) → fallback to default
- * 4. Everything else → default provider + default model
+ * 3. Claude tier names (sonnet, opus, haiku) → match MODEL_{TIER} config or throw
+ * 4. Everything else → throw (no default fallback)
  */
 export function resolveModel(
   modelName: string,
@@ -86,18 +86,17 @@ export function resolveModel(
   };
 }
 
-/** Parse "provider/model" into {providerId, model}; if no "/", use default provider */
+/** Parse "provider/model" into {providerId, model}; if no "/", use raw string with default provider */
 function parseTierModel(
   raw: string | undefined,
-  defaultProvider: ProviderId,
-  defaultModel: string,
-): { providerId: ProviderId; providerModel: string } {
-  if (!raw) return { providerId: defaultProvider, providerModel: defaultModel };
+): { providerId: ProviderId; providerModel: string } | null {
+  if (!raw) return null;
 
   const slashIdx = raw.indexOf("/");
   if (slashIdx === -1) {
-    // Bare model name → default provider
-    return { providerId: defaultProvider, providerModel: raw };
+    // Bare model name → no provider prefix, treat whole string as model
+    // (caller must handle error when no default provider exists)
+    return null;
   }
 
   const prefix = raw.slice(0, slashIdx);
@@ -106,11 +105,11 @@ function parseTierModel(
     return { providerId: id, providerModel: raw.slice(slashIdx + 1) };
   }
 
-  // Unrecognized prefix → treat whole string as model name with default provider
-  return { providerId: defaultProvider, providerModel: raw };
+  // Unrecognized prefix → can't parse
+  return null;
 }
 
-/** Map Claude tier names to per-tier {provider, model} or defaults */
+/** Map Claude tier names to per-tier {provider, model} or throw on missing config */
 function resolveTier(
   claudeModel: string,
   config: Config,
@@ -121,23 +120,28 @@ function resolveTier(
   const isHaiku = lower.includes("haiku");
 
   if (isOpus && config.modelOpus) {
-    const base = parseTierModel(config.modelOpus, config.defaultProvider, config.defaultModel);
-    return { ...base, temperature: config.modelOpusTemperature, thinkingLevel: config.modelOpusThinkingLevel };
+    const base = parseTierModel(config.modelOpus);
+    if (base) return { ...base, temperature: config.modelOpusTemperature, thinkingLevel: config.modelOpusThinkingLevel };
+    throw new Error(`Invalid MODEL_OPUS format: "${config.modelOpus}". Use "provider/model".`);
   }
   if (isSonnet && config.modelSonnet) {
-    const base = parseTierModel(config.modelSonnet, config.defaultProvider, config.defaultModel);
-    return { ...base, temperature: config.modelSonnetTemperature, thinkingLevel: config.modelSonnetThinkingLevel };
+    const base = parseTierModel(config.modelSonnet);
+    if (base) return { ...base, temperature: config.modelSonnetTemperature, thinkingLevel: config.modelSonnetThinkingLevel };
+    throw new Error(`Invalid MODEL_SONNET format: "${config.modelSonnet}". Use "provider/model".`);
   }
   if (isHaiku && config.modelHaiku) {
-    const base = parseTierModel(config.modelHaiku, config.defaultProvider, config.defaultModel);
-    return { ...base, temperature: config.modelHaikuTemperature, thinkingLevel: config.modelHaikuThinkingLevel };
+    const base = parseTierModel(config.modelHaiku);
+    if (base) return { ...base, temperature: config.modelHaikuTemperature, thinkingLevel: config.modelHaikuThinkingLevel };
+    throw new Error(`Invalid MODEL_HAIKU format: "${config.modelHaiku}". Use "provider/model".`);
   }
 
-  // Claude named model without specific override → default provider + default model
+  // Known tier name without config → throw
   if (isOpus || isSonnet || isHaiku) {
-    return { providerId: config.defaultProvider, providerModel: config.defaultModel };
+    throw new Error(
+      `No route configured for tier "${claudeModel}". Set MODEL_OPUS/SONNET/HAIKU in .env (format: "provider/model").`,
+    );
   }
 
-  // Unknown model → pass through as-is with default provider
-  return { providerId: config.defaultProvider, providerModel: claudeModel };
+  // Unknown model → can't route without a default provider
+  throw new Error(`Unknown model "${claudeModel}" — cannot resolve route. Use "provider/model" syntax or configure MODEL_OPUS/SONNET/HAIKU.`);
 }

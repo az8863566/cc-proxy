@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { DeepSeekProvider } from "./providers/deepseek.js";
 import { ZhipuProvider } from "./providers/zhipu.js";
@@ -6,34 +8,28 @@ import { createApp } from "./server.js";
 import type { ProviderConfig, Config } from "./config.js";
 import type { Provider } from "./providers/base.js";
 
+// Force .env values into process.env so project config always wins over system env
+(function loadEnvOverrides() {
+  try {
+    const content = readFileSync(resolve(".env"), "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx === -1) continue;
+      const rawValue = trimmed.slice(eqIdx + 1).trim();
+      // Strip surrounding quotes
+      const value = (rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'"))
+        ? rawValue.slice(1, -1)
+        : rawValue;
+      process.env[trimmed.slice(0, eqIdx).trim()] = value;
+    }
+  } catch {
+    // .env file not found, skip
+  }
+})();
+
 const config = loadConfig(process.env);
-
-/**
- * Resolve final provider config with thinking + temperature overrides.
- * Priority: Provider-level env → Global env → built-in default.
- */
-function resolveProviderConfig(
-  base: ProviderConfig,
-  globalConfig: Config,
-): ProviderConfig {
-  const resolved = { ...base };
-
-  // Thinking: provider-level overrides global
-  if (resolved.thinkingLevel === undefined) {
-    resolved.thinkingLevel = globalConfig.thinkingLevel;
-  }
-  // Global disable overrides everything
-  if (!globalConfig.enableThinking) {
-    resolved.thinkingLevel = "off";
-  }
-
-  // Temperature: provider-level overrides global
-  if (resolved.temperature === undefined && globalConfig.temperature !== undefined) {
-    resolved.temperature = globalConfig.temperature;
-  }
-
-  return resolved;
-}
 
 // Provider registry — add new providers here only
 const providerFactories: Array<{
@@ -76,8 +72,7 @@ const activeProviders: string[] = [];
 for (const { id, configKey, factory } of providerFactories) {
   const providerConfig = config[configKey];
   if (providerConfig.apiKey) {
-    const resolved = resolveProviderConfig(providerConfig, config);
-    providers.set(id, factory(resolved));
+    providers.set(id, factory(providerConfig));
     activeProviders.push(id);
   }
 }
@@ -87,13 +82,6 @@ const server = createApp(config, providers);
 server.listen(config.port, config.host, () => {
   console.log(`[cc-proxy] listening on http://${config.host}:${config.port}`);
   console.log(`[cc-proxy] providers: ${activeProviders.join(", ")}`);
-  if (config.enableThinking) {
-    console.log(
-      `[cc-proxy] thinking: enabled, level=${config.thinkingLevel}`,
-    );
-  } else {
-    console.log(`[cc-proxy] thinking: disabled`);
-  }
   console.log(`[cc-proxy] log level: ${config.logLevel}`);
 });
 

@@ -288,73 +288,97 @@ export function* finalizeStream(
   yield messageStop();
 }
 
+import type { Usage, StreamHandle } from "../providers/base.js";
+
 export { createState, ThinkTagParser, messageStart };
 
 /**
- * Shared helper: read an OpenAI SSE stream from a fetch Response and convert
- * to Anthropic SSE events. Used by zhipu and opencode-go providers.
+ * Read an OpenAI SSE stream from a fetch Response and convert to Anthropic SSE.
+ * Captures real usage from upstream's final chunk for egress logging.
  */
-export async function* streamOpenAIResponse(
+export function streamOpenAIResponse(
   response: Response,
   defaultModel: string,
   thinkingEnabled: boolean,
-): AsyncIterable<string> {
-  if (!response.body) {
-    throw new Error("Upstream returned empty response body");
-  }
+  estimatedInputTokens: number,
+): StreamHandle {
+  let capturedUsage: Usage = { input_tokens: estimatedInputTokens, output_tokens: 0 };
+  let resolveUsage!: (u: Usage) => void;
+  const usage = new Promise<Usage>((resolve) => { resolveUsage = resolve; });
 
-  const msgId = `msg_${Date.now()}`;
-  const inputTokens = 0;
-  const state = createState(msgId, defaultModel, inputTokens);
-  const thinkParser = new ThinkTagParser();
+  async function* generate(): AsyncGenerator<string> {
+    if (!response.body) {
+      throw new Error("Upstream returned empty response body");
+    }
 
-  yield messageStart(msgId, defaultModel, inputTokens);
+    const msgId = `msg_${Date.now()}`;
+    const state = createState(msgId, defaultModel, estimatedInputTokens);
+    const thinkParser = new ThinkTagParser();
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finishReason: string | undefined;
+    yield messageStart(msgId, defaultModel, estimatedInputTokens);
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finishReason: string | undefined;
 
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-        const dataStr = trimmed.slice(6);
-        if (dataStr === "[DONE]") break;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
-        try {
-          const chunk = JSON.parse(dataStr);
+          const dataStr = trimmed.slice(6);
+          if (dataStr === "[DONE]") break;
 
-          const reason = chunk?.choices?.[0]?.finish_reason;
-          if (reason) finishReason = reason;
+          try {
+            const chunk = JSON.parse(dataStr);
 
-          for (const event of convertOpenAIChunk(
-            chunk,
-            state,
-            thinkParser,
-            thinkingEnabled,
-          )) {
-            yield event;
+            const upstreamUsage = chunk?.usage;
+            if (upstreamUsage && typeof upstreamUsage === "object") {
+              if (typeof upstreamUsage.prompt_tokens === "number") {
+                capturedUsage.input_tokens = upstreamUsage.prompt_tokens;
+                state.inputTokens = upstreamUsage.prompt_tokens;
+              }
+              if (typeof upstreamUsage.completion_tokens === "number") {
+                capturedUsage.output_tokens = upstreamUsage.completion_tokens;
+              }
+            }
+
+            const reason = chunk?.choices?.[0]?.finish_reason;
+            if (reason) finishReason = reason;
+
+            for (const event of convertOpenAIChunk(
+              chunk, state, thinkParser, thinkingEnabled,
+            )) {
+              yield event;
+            }
+          } catch {
+            // Skip malformed SSE lines
           }
-        } catch {
-          // Skip malformed SSE lines
         }
       }
+    } finally {
+      reader.releaseLock();
     }
-  } finally {
-    reader.releaseLock();
+
+    for (const event of finalizeStream(state, thinkParser, finishReason)) {
+      yield event;
+    }
+
+    if (capturedUsage.output_tokens === 0) {
+      capturedUsage.output_tokens = estimateTokens(state.accumulatedOutput);
+    }
+
+    resolveUsage(capturedUsage);
   }
 
-  for (const event of finalizeStream(state, thinkParser, finishReason)) {
-    yield event;
-  }
+  return { events: generate(), usage };
 }

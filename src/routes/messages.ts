@@ -1,38 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Provider, AnthropicRequest, ProviderOverrides } from "../providers/base.js";
 import type { Config } from "../config.js";
-import { resolveModel } from "../model-router.js";
+import { resolveModel, type ResolvedModel } from "../model-router.js";
 import { errorEvent } from "../sse.js";
 import { insertEgress } from "../db.js";
 import { sendJson } from "../server.js";
-
-interface EgressStats {
-  inputTokens?: number;
-  outputTokens?: number;
-}
-
-/** Forward every SSE event, extracting token usage from message_start and message_delta. */
-async function* sniffUsage(
-  stream: AsyncIterable<string>,
-  stats: EgressStats,
-): AsyncIterable<string> {
-  for await (const event of stream) {
-    for (const line of event.split("\n")) {
-      if (!line.startsWith("data: ")) continue;
-      try {
-        const payload = JSON.parse(line.slice(6));
-        const usage = payload?.usage;
-        if (usage && typeof usage === "object") {
-          if (typeof usage.input_tokens === "number") stats.inputTokens = usage.input_tokens;
-          if (typeof usage.output_tokens === "number") stats.outputTokens = usage.output_tokens;
-        }
-      } catch {
-        // Skip malformed JSON lines
-      }
-    }
-    yield event;
-  }
-}
 
 /** Read the JSON body from an incoming HTTP request */
 function readBody(req: IncomingMessage): Promise<string> {
@@ -77,26 +49,23 @@ export async function handleMessages(
   }
 
   // Resolve provider
-  let resolved = resolveModel(request.model, config);
+  let resolved: ResolvedModel;
+  try {
+    resolved = resolveModel(request.model, config);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Route resolution failed";
+    sendJson(res, 400, { error: { type: "invalid_request_error", message: msg } });
+    return;
+  }
 
   if (!providers.has(resolved.providerId)) {
-    // Explicit provider prefix (e.g. "deepseek/xxx") → error, don't silently reroute
-    if (resolved.explicitProvider) {
-      sendJson(res, 400, {
-        error: {
-          type: "invalid_request_error",
-          message: `Provider '${resolved.providerId}' is not configured. Available: ${[...providers.keys()].join(", ")}`,
-        },
-      });
-      return;
-    }
-    // Tier-based or unknown model → fall back to default provider
-    resolved = {
-      providerId: config.defaultProvider,
-      providerModel: resolved.providerModel,
-      originalModel: request.model,
-      explicitProvider: false,
-    };
+    sendJson(res, 400, {
+      error: {
+        type: "invalid_request_error",
+        message: `Provider '${resolved.providerId}' is not configured. Available: ${[...providers.keys()].join(", ")}`,
+      },
+    });
+    return;
   }
 
   const provider = providers.get(resolved.providerId);
@@ -135,28 +104,27 @@ export async function handleMessages(
   const hasOverrides = overrides.temperature !== undefined || overrides.thinkingLevel !== undefined;
 
   const sentAt = new Date().toISOString();
-  const stats: EgressStats = {};
 
   try {
-    for await (const event of sniffUsage(
-      provider.streamResponse(
-        request,
-        ac.signal,
-        hasOverrides ? overrides : undefined,
-      ),
-      stats,
-    )) {
+    const { events, usage } = provider.streamResponse(
+      request,
+      ac.signal,
+      hasOverrides ? overrides : undefined,
+    );
+
+    for await (const event of events) {
       if (res.writableEnded) break;
       res.write(event);
     }
 
+    const u = await usage;
     insertEgress({
       sent_at: sentAt,
       gateway_model: gatewayModel,
       provider_model: resolved.providerModel,
       provider: resolved.providerId,
-      input_tokens: stats.inputTokens,
-      output_tokens: stats.outputTokens,
+      input_tokens: u.input_tokens,
+      output_tokens: u.output_tokens,
     });
   } catch (err) {
     if (!res.writableEnded) {

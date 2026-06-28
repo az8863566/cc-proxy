@@ -30,28 +30,27 @@ export async function handleModels(
     }
   }
 
-  // Claude tier aliases → show what they resolve to (with fallback)
-  // Model IDs match Claude Code's standard [1m] suffix convention
+  // Claude tier aliases → show what they resolve to (skip if route not configured)
   const tiers = [
     { id: "claude-opus-4-8[1m]", lookup: "opus" },
     { id: "claude-sonnet-4-6[1m]", lookup: "sonnet" },
     { id: "claude-haiku-4-5[1m]", lookup: "haiku" },
   ];
   for (const { id, lookup } of tiers) {
-    const resolved = resolveModel(lookup, config);
-    let resolvedId: string;
-    if (providers.has(resolved.providerId)) {
-      resolvedId = `${resolved.providerId}/${resolved.providerModel}`;
-    } else {
-      resolvedId = `${config.defaultProvider}/${resolved.providerModel}`;
+    try {
+      const resolved = resolveModel(lookup, config);
+      if (providers.has(resolved.providerId)) {
+        allModels.push({
+          id,
+          object: "model",
+          created,
+          display_name: `${resolved.providerId}/${resolved.providerModel}`,
+          context_window: 1_000_000,
+        });
+      }
+    } catch {
+      // Skip tiers with no route configured
     }
-    allModels.push({
-      id,
-      object: "model",
-      created,
-      display_name: resolvedId,
-      context_window: 1_000_000,
-    });
   }
 
   sendJson(res, 200, { data: allModels, object: "list" });

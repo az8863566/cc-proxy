@@ -1,98 +1,146 @@
-# AGENTIC DIRECTIVE
+# cc-proxy — Claude Code 多模型代理
 
-> This file is identical to AGENTS.md. Keep them in sync.
+> 轻量级 Anthropic Messages API 代理，支持多后端（DeepSeek、Zhipu GLM、OpenCode Go），
+> 向 Claude Code 暴露标准的 `/v1/messages` SSE 流接口。
 
-## CODING ENVIRONMENT
+## 架构总览
 
-- Install astral uv using "curl -LsSf https://astral.sh/uv/install.sh | sh" if not already installed and if already installed then update it to the latest version
-- Install Python 3.14.0 stable using `uv python install 3.14.0` if not already installed (requires uv >=0.9; see `[tool.uv] required-version` in `pyproject.toml`)
-- Always use `uv run` to run files instead of the global `python` command.
-- Current uv ruff formatter is set to py314 which has supports multiple exception types without paranthesis (except TypeError, ValueError:)
-- Read `.env.example` for environment variables.
-- All CI checks must pass; failing checks block merge.
-- Add tests for new changes (including edge cases).
-- Before pushing, prefer `./scripts/ci.sh` (macOS/Linux) or `.\scripts\ci.ps1` (Windows) to run the local CI sequence; requires `uv` on PATH. The local scripts run Ruff in repair mode (`ruff format`, then `ruff check --fix`) before type checking and tests.
-- Use `--only` / `--skip` (PowerShell: `-Only` / `-Skip`) to run a subset when iterating; use `--dry-run` to print commands without running them.
-- GitHub CI remains check-only for Ruff (`ruff format --check`, `ruff check`) so branch protection verifies committed code.
-- Fall back to individual repair commands when debugging local failures: `uv run ruff format`, `uv run ruff check --fix`, `uv run ty check`, `uv run pytest -v --tb=short`. Use GitHub-style checks only when verifying enforcement locally: `uv run ruff format --check`, `uv run ruff check`.
-- Do not add `# type: ignore` or `# ty: ignore`; fix the underlying type issue.
-- All 5 check IDs are represented in `scripts/ci.sh` / `scripts/ci.ps1` and enforced in `tests.yml` on push/merge (parallel jobs: suppression grep, ruff-format, ruff-check, ty, pytest).
-- Branch protection: set **required status checks** to **all** of those statuses (e.g. **Ban type ignore suppressions**, **ruff-format**, **ruff-check**, **ty**, **pytest**—use the exact labels GitHub shows, which may be prefixed with **CI /**). Remove **ci** from required checks if it was previously added for the old gate job.
+```
+Claude Code ──→ /v1/messages ──→ resolveModel() ──→ Provider.streamResponse()
+                      │                                       │
+                      │                                {events, usage}
+                      │                                       │
+                      ▼                                       ▼
+              SSE 流回写客户端                       insertEgress(usage)
+```
 
-## IDENTITY & CONTEXT
+### 项目结构
 
-- You are an expert Software Architect and Systems Engineer.
-- Goal: Zero-defect, root-cause-oriented engineering for bugs; test-driven engineering for new features. Think carefully; no need to rush.
-- Code: Write the simplest code possible. Keep the codebase minimal and modular.
+```
+src/
+├── index.ts                      # 入口：Config 加载 + Provider 注册 + Server 启动
+├── config.ts                     # Zod schema + loadConfig（所有环境变量映射）
+├── server.ts                     # HTTP Server：路由注册表 + CORS + Auth
+├── model-router.ts               # 模型路由：tier 映射 + 显式 provider/ 前缀解析
+├── sse.ts                        # Anthropic SSE 事件构建器
+├── db.ts                         # SQLite egress_log + insertEgress + queryStats
+├── stats-cli.ts                  # CLI 统计查询工具
+├── routes/
+│   ├── messages.ts               # POST /v1/messages 核心处理器
+│   ├── health.ts                 # GET /health
+│   └── models.ts                 # GET /v1/models
+├── providers/
+│   ├── base.ts                   # Provider 接口 + Usage / StreamHandle 类型
+│   ├── deepseek.ts               # DeepSeek — 原生 Anthropic Messages API 透传
+│   ├── openai-compatible.ts      # OpenAI Chat Completions 抽象基类
+│   ├── zhipu.ts                  # Zhipu GLM — 原生 Anthropic Messages API 透传
+│   └── opencode-go.ts            # OpenCode Go — extends OpenAICompatibleProvider
+└── conversion/
+    ├── anthropic-to-openai.ts    # ANTH → OAI 请求体转换
+    └── openai-sse-to-anthropic.ts # OAI SSE → ANTH SSE 流转换（含 usage 捕获）
+```
 
-## ARCHITECTURE PRINCIPLES
+## Provider 类型
 
-- **Shared utilities**: Put shared Anthropic protocol logic in neutral `core/anthropic/` modules. Do not have one provider import from another provider's utils.
-- **DRY**: Extract shared base classes to eliminate duplication. Prefer composition over copy-paste.
-- **Encapsulation**: Use accessor methods for internal state (e.g. `set_current_task()`), not direct `_attribute` assignment from outside.
-- **Provider-specific config**: Keep provider-specific fields (e.g. `nim_settings`) in provider constructors, not in the base `ProviderConfig`.
-- **Dead code**: Remove unused code, legacy systems, and hardcoded values. Use settings/config instead of literals (e.g. `settings.provider_type` not `"nvidia_nim"`).
-- **Performance**: Use list accumulation for strings (not `+=` in loops), cache env vars at init, prefer iterative over recursive when stack depth matters.
-- **Platform-agnostic naming**: Use generic names (e.g. `PLATFORM_EDIT`) not platform-specific ones (e.g. `TELEGRAM_EDIT`) in shared code.
-- **No type ignores**: Do not add `# type: ignore` or `# ty: ignore`. Fix the underlying type issue.
-- **Complete migrations**: When moving modules, update imports to the new owner and remove old compatibility shims in the same change unless preserving a published interface is explicitly required.
-- **Maximum Test Coverage**: There should be maximum test coverage for everything, preferably live smoke test coverage to catch bugs early
+| Provider | 协议 | 行为 | Usage 来源 |
+|----------|------|------|-----------|
+| `deepseek`, `zhipu` | 原生 Anthropic Messages API | 透传：取完整 JSON，解 usage，构 SSE | JSON body `usage.input_tokens / output_tokens` |
+| `opencode_go` | OpenAI Chat Completions | 转换：ANTH→OAI 请求，OAI SSE→ANTH SSE | 最后一条 SSE chunk 的 `usage.prompt_tokens / completion_tokens` |
 
-## COGNITIVE WORKFLOW
+## 核心接口
 
-1. **ANALYZE**: Read relevant files. Do not guess.
-2. **PLAN**: Map out the logic. Identify root cause or required changes. Order changes by dependency.
-3. **EXECUTE**: Fix the cause, not the symptom. Execute incrementally with clear commits.
-4. **VERIFY**: Run `./scripts/ci.sh` or `.\scripts\ci.ps1`, plus relevant smoke tests when needed. Confirm the fix via logs or output.
-5. **SPECIFICITY**: Do exactly as much as asked; nothing more, nothing less.
-6. **PROPAGATION**: Changes impact multiple files; propagate updates correctly.
-7. **VERSION**: If the commit touches production files on `main`, bump semver in the same commit (see [Versioning](#versioning-main)).
+```typescript
+interface Provider {
+  streamResponse(request, signal?, overrides?): StreamHandle;
+  listModels(): Promise<string[]>;
+  checkHealth(): Promise<boolean>;
+}
 
-## VERSIONING (MAIN)
+interface StreamHandle {
+  events: AsyncIterable<string>;  // Anthropic SSE 事件流
+  usage: Promise<Usage>;          // 流结束后 resolve 真实的 input/output tokens
+}
 
-Every commit on `main` that changes a **production file** must include a semver bump in **`pyproject.toml`** in the **same commit**. Do not merge or push prod changes without updating the version.
+interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+}
+```
 
-### Production files
+### 关键约束
 
-These paths count as production (runtime, packaging, or install surface):
+- **Provider 不改 model**：路由层 patch `request.model = resolved.providerModel`，Provider 直接使用
+- **全局参数已移除**：temperature/thinkingLevel 只来自 per-tier `MODEL_{TIER}_TEMPERATURE` / `MODEL_{TIER}_THINKING`，通过 `overrides` 传入 Provider
+- **无兜底**：tier 映射未配置直接抛异常，不尝试验证或回退
+- **Usage 由 Provider 提取**：每个 Provider 从各自上游响应中提取真实 usage，`messages.ts` 只管 `await usage` 后入库
+- **SSE 协议解耦**：`messages.ts` 不解析任何 SSE 事件内容（无 sniffUsage），只透传写出
 
-- `api/`, `cli/`, `config/`, `core/`, `messaging/`, `providers/`
-- `.env.example`
-- `pyproject.toml` (dependencies, scripts, packaging)
-- `scripts/install.sh`, `scripts/install.ps1`, `scripts/uninstall.sh`, `scripts/uninstall.ps1`, `scripts/ci.sh`, `scripts/ci.ps1`
+## 环境变量
 
-These do **not** require a version bump on their own:
+路由配置异常时直接抛出错误，无兜底默认值。所有环境变量定义见 `.env.example`，此处仅记录关键配置规则：
 
-- `tests/`, `smoke/`
-- Docs and assets: `README.md`, `assets/`, `AGENTS.md`, `CLAUDE.md`
-- CI and repo config: `.github/`, `.gitignore`
+### 路由配置格式
 
-If a single commit mixes production and non-production edits, still bump the version.
+```
+MODEL_{TIER}={provider}/{model}    # tier → 后端映射（provider: deepseek/zhipu/opencode_go）
+MODEL_{TIER}_TEMPERATURE=0.1       # 可选，per-tier 温度
+MODEL_{TIER}_THINKING=low          # 可选，per-tier 思考方式: off/low/high/max
+```
 
-### Semver rules
+### 凭证配置
 
-Use `[project].version` as `MAJOR.MINOR.PATCH`:
+每个 Provider 只需 `API_KEY` + `BASE_URL`，前缀与 provider 名称对应（如 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`）。具体端点和默认值见 `.env.example`。
 
-- **PATCH** (`x.y.Z+1`): bug fixes, refactors with no user-visible behavior change, dependency updates, packaging/install fixes.
-- **MINOR** (`x.Y+1.0`): backward-compatible features—new providers, admin fields, CLI commands, config options, or behavior additions.
-- **MAJOR** (`X+1.0.0`): breaking changes—removed or renamed env vars, incompatible API/CLI/default changes, or migrations users must act on.
+## 模型路由规则
 
-When unsure between PATCH and MINOR, prefer PATCH for fixes and MINOR for new capability.
+`model-router.ts` 执行顺序（无兜底，未配置则抛异常）：
 
-### Required steps
+1. **`provider/model` 格式** → 显式路由到指定 Provider，model 传原值
+2. **`provider-` 前缀** → 显式路由（兼容旧格式）
+3. **tier 匹配**（sonnet/opus/haiku） → 查 `MODEL_{TIER}` 配置映射到 Provider+model
+4. **其他** → 抛出 `Unknown model` 错误
 
-1. Classify the change and choose the bump level.
-2. Update `version` in `pyproject.toml`.
-3. Run `uv lock` so `uv.lock` reflects the new package version.
-4. Include the version and lockfile updates in the same commit as the production change.
+## Egress 日志
 
-Example commit on `main` after a packaging fix: bump `1.2.38` → `1.2.39`, run `uv lock`, commit together with the fix.
+SQLite `data/egress.db` → 表 `egress_log`：
 
-## SUMMARY STANDARDS
+```
+id | sent_at | gateway_model | provider | provider_model
+  | input_tokens | output_tokens | status
+```
 
-- Summaries must be technical and granular.
-- Include: [Files Changed], [Logic Altered], [Verification Method], [Residual Risks] (if no residual risks then say none).
+- 流结束后通过 `StreamHandle.usage` Promise 获取真实用量
+- 上游未返回 usage 时 fallback 到字符估算（仅 output）
+- 查询：`npx stats` (总量) / `npx stats --by-model` (按模型)
 
-## TOOLS
+## 开发命令
 
-- Prefer built-in tools (grep, read_file, etc.) over manual workflows. Check tool availability before use.
+```bash
+npm run dev        # tsx watch src/index.ts
+npm start          # tsx --env-file=.env src/index.ts
+npm run build      # tsc
+npm run typecheck  # tsc --noEmit
+npm run stats      # node dist/stats-cli.js
+npm test           # vitest run
+```
+
+## 部署
+
+VBS 后台启动（静默无窗口）：
+- `scripts/start-proxy.vbs` → `scripts/start-proxy.bat` → `node --env-file=.env dist/index.js`
+- 双击 `.vbs` 或 `cscript //nologo scripts/start-proxy.vbs` 启动
+- 后端：编译后的 `dist/` 目录
+
+重新打包部署：
+```bash
+npm run build          # 编译 TypeScript
+taskkill //F //PID <PID>  # 停旧进程（netstat -ano | grep 8787 查 PID）
+cscript //nologo scripts/start-proxy.vbs  # 静默启动
+```
+
+## 设计约束
+
+- **最小改：** 不改不必要的东西，只修具体问题
+- **Provider 不分担路由职责：** `providerId` 由路由层确定，Provider 只负责发请求和提取 usage
+- **model 由路由控制：** Provider 不覆盖 `request.model`，错误模型名直接抛给下游
+- **无 sniffUsage：** 路由层不解析 SSE 事件内容，usage 由 Provider 保证准确

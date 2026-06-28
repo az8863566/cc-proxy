@@ -24,19 +24,26 @@ export interface ProviderOverrides {
   thinkingLevel?: string;
 }
 
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface StreamHandle {
+  events: AsyncIterable<string>;
+  usage: Promise<Usage>;
+}
+
 export interface Provider {
   readonly id: string;
 
-  /** Stream an Anthropic SSE response from this provider */
   streamResponse(
     request: AnthropicRequest,
     signal?: AbortSignal,
     overrides?: ProviderOverrides,
-  ): AsyncIterable<string>;
+  ): StreamHandle;
 
-  /** List available model IDs */
   listModels(): Promise<string[]>;
 
-  /** Check provider health */
   checkHealth(): Promise<boolean>;
 }
