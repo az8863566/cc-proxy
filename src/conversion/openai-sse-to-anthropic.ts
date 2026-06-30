@@ -350,6 +350,15 @@ export function streamOpenAIResponse(
               if (typeof upstreamUsage.completion_tokens === "number") {
                 capturedUsage.output_tokens = upstreamUsage.completion_tokens;
               }
+              // OpenAI: prompt_tokens_details.cached_tokens → cache_read_input_tokens
+              const details = upstreamUsage.prompt_tokens_details;
+              if (details && typeof details === "object" && typeof details.cached_tokens === "number") {
+                capturedUsage.cache_read_input_tokens = details.cached_tokens;
+              }
+              // Also check for direct cache_read_input_tokens (Anthropic-compatible)
+              if (typeof upstreamUsage.cache_read_input_tokens === "number") {
+                capturedUsage.cache_read_input_tokens = upstreamUsage.cache_read_input_tokens;
+              }
             }
 
             const reason = chunk?.choices?.[0]?.finish_reason;

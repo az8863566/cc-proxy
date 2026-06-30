@@ -12,6 +12,15 @@ function getDb(): Database.Database {
   mkdirSync(DATA_DIR, { recursive: true });
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
+
+  // Migration: add cache_read_input_tokens column if missing
+  const cols = db
+    .prepare("PRAGMA table_info(egress_log)")
+    .all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "cache_read_input_tokens")) {
+    db.exec("ALTER TABLE egress_log ADD COLUMN cache_read_input_tokens INTEGER");
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS egress_log (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,9 +28,10 @@ function getDb(): Database.Database {
       gateway_model   TEXT NOT NULL,
       provider        TEXT NOT NULL,
       provider_model  TEXT NOT NULL,
-      input_tokens    INTEGER,
-      output_tokens   INTEGER,
-      status          TEXT NOT NULL DEFAULT 'success'
+      input_tokens             INTEGER,
+      cache_read_input_tokens  INTEGER,
+      output_tokens            INTEGER,
+      status                   TEXT NOT NULL DEFAULT 'success'
     )
   `);
   return db;
@@ -34,6 +44,7 @@ export interface EgressRecord {
   provider_model: string;
   input_tokens?: number;
   output_tokens?: number;
+  cache_read_input_tokens?: number;
   status?: string;
 }
 
@@ -41,14 +52,15 @@ export function insertEgress(record: EgressRecord): void {
   try {
     const db = getDb();
     db.prepare(
-      `INSERT INTO egress_log (sent_at, gateway_model, provider, provider_model, input_tokens, output_tokens, status)
-       VALUES (@sent_at, @gateway_model, @provider, @provider_model, @input_tokens, @output_tokens, @status)`,
+      `INSERT INTO egress_log (sent_at, gateway_model, provider, provider_model, input_tokens, cache_read_input_tokens, output_tokens, status)
+       VALUES (@sent_at, @gateway_model, @provider, @provider_model, @input_tokens, @cache_read_input_tokens, @output_tokens, @status)`,
     ).run({
       sent_at: record.sent_at,
       gateway_model: record.gateway_model,
       provider: record.provider,
       provider_model: record.provider_model,
       input_tokens: record.input_tokens ?? null,
+      cache_read_input_tokens: record.cache_read_input_tokens ?? null,
       output_tokens: record.output_tokens ?? null,
       status: record.status ?? "success",
     });
@@ -75,6 +87,7 @@ export interface DetailRecord {
   provider_model: string;
   provider: string;
   input_tokens: number;
+  cache_read_input_tokens: number;
   output_tokens: number;
 }
 
@@ -83,6 +96,7 @@ export interface ModelSummary {
   provider: string;
   count: number;
   input_tokens: number;
+  cache_read_input_tokens: number;
   output_tokens: number;
 }
 
@@ -92,6 +106,7 @@ export function queryRecordsByRange(since: string, until: string): DetailRecord[
     .prepare(
       `SELECT sent_at, provider_model, provider,
               COALESCE(input_tokens, 0) AS input_tokens,
+              COALESCE(cache_read_input_tokens, 0) AS cache_read_input_tokens,
               COALESCE(output_tokens, 0) AS output_tokens
        FROM egress_log
        WHERE sent_at >= @since AND sent_at < @until
@@ -110,6 +125,7 @@ export function queryModelSummaryByRange(
       `SELECT provider_model, provider,
               COUNT(*) AS count,
               COALESCE(SUM(input_tokens), 0) AS input_tokens,
+              COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
               COALESCE(SUM(output_tokens), 0) AS output_tokens
        FROM egress_log
        WHERE sent_at >= @since AND sent_at < @until

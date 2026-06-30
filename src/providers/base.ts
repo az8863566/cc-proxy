@@ -27,6 +27,7 @@ export interface ProviderOverrides {
 export interface Usage {
   input_tokens: number;
   output_tokens: number;
+  cache_read_input_tokens?: number;
 }
 
 export interface StreamHandle {

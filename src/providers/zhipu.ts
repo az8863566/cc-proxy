@@ -107,6 +107,7 @@ export class ZhipuProvider implements Provider {
                   if (plUsage && typeof plUsage === "object") {
                     if (typeof plUsage.input_tokens === "number") capturedUsage.input_tokens = plUsage.input_tokens;
                     if (typeof plUsage.output_tokens === "number") capturedUsage.output_tokens = plUsage.output_tokens;
+                    if (typeof plUsage.cache_read_input_tokens === "number") capturedUsage.cache_read_input_tokens = plUsage.cache_read_input_tokens;
                   }
                 } catch { /* skip parse errors */ }
                 yield `event: ${eventType}\ndata: ${dataStr}\n\n`;
@@ -137,6 +138,7 @@ export class ZhipuProvider implements Provider {
           if (u) {
             capturedUsage.input_tokens = typeof u.input_tokens === "number" ? u.input_tokens : 0;
             capturedUsage.output_tokens = typeof u.output_tokens === "number" ? u.output_tokens : 0;
+            if (typeof u.cache_read_input_tokens === "number") capturedUsage.cache_read_input_tokens = u.cache_read_input_tokens;
           }
 
           const msgId = json.id || `msg_${Date.now()}`;
@@ -189,6 +191,7 @@ export class ZhipuProvider implements Provider {
                 if (plUsage && typeof plUsage === "object") {
                   if (typeof plUsage.input_tokens === "number") capturedUsage.input_tokens = plUsage.input_tokens;
                   if (typeof plUsage.output_tokens === "number") capturedUsage.output_tokens = plUsage.output_tokens;
+                  if (typeof plUsage.cache_read_input_tokens === "number") capturedUsage.cache_read_input_tokens = plUsage.cache_read_input_tokens;
                 }
               } catch { /* skip parse errors */ }
               yield `event: ${event}\ndata: ${dataStr}\n\n`;
@@ -197,7 +200,11 @@ export class ZhipuProvider implements Provider {
         }
       }
 
-      resolveUsage(capturedUsage);
+      resolveUsage({
+        input_tokens: capturedUsage.input_tokens + (capturedUsage.cache_read_input_tokens ?? 0),
+        output_tokens: capturedUsage.output_tokens,
+        cache_read_input_tokens: capturedUsage.cache_read_input_tokens,
+      });
     }
 
     return { events: events(), usage };

@@ -124,6 +124,7 @@ export async function handleMessages(
       provider_model: resolved.providerModel,
       provider: resolved.providerId,
       input_tokens: u.input_tokens,
+      cache_read_input_tokens: u.cache_read_input_tokens,
       output_tokens: u.output_tokens,
     });
   } catch (err) {

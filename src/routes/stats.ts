@@ -27,10 +27,11 @@ export const handleStatsApi: RouteHandler = (req, res) => {
     (acc, m) => {
       acc.count += m.count;
       acc.input_tokens += m.input_tokens;
+      acc.cache_read_input_tokens += m.cache_read_input_tokens;
       acc.output_tokens += m.output_tokens;
       return acc;
     },
-    { count: 0, input_tokens: 0, output_tokens: 0 },
+    { count: 0, input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
   );
 
   sendJson(res, 200, {
@@ -115,7 +116,7 @@ function renderPage(): string {
     font-size: 26px; font-weight: 600; color: var(--text);
     font-variant-numeric: tabular-nums; margin-bottom: 8px;
   }
-  .stat-card .card-tokens { display: flex; gap: 16px; font-size: 12px; }
+  .stat-card .card-tokens { display: flex; gap: 14px; font-size: 12px; flex-wrap: wrap; }
   .stat-card .card-tokens .tk-in { color: var(--accent); }
   .stat-card .card-tokens .tk-out { color: var(--out); }
   .stat-card .card-tokens .tk-label { color: var(--muted); font-size: 11px; display: block; }
@@ -183,6 +184,11 @@ function renderPage(): string {
     </div>
     <div class="total-divider"></div>
     <div class="stat-item">
+      <span class="stat-label">缓存命中</span>
+      <span class="stat-num" style="color:#7c3aed">{{ fmt(total.cache_read_input_tokens || 0) }}</span>
+    </div>
+    <div class="total-divider"></div>
+    <div class="stat-item">
       <span class="stat-label">输出 Tokens</span>
       <span class="stat-num out">{{ fmt(total.output_tokens) }}</span>
     </div>
@@ -204,8 +210,12 @@ function renderPage(): string {
               </div>
               <div class="card-tokens">
                 <span>
-                  <span class="tk-label">输入</span>
+                  <span class="tk-label">输入 Tokens</span>
                   <span class="tk-in">{{ fmt(m.input_tokens) }}</span>
+                </span>
+                <span>
+                  <span class="tk-label">缓存</span>
+                  <span style="color:#7c3aed">{{ fmt(m.cache_read_input_tokens || 0) }}</span>
                 </span>
                 <span>
                   <span class="tk-label">输出</span>
@@ -241,9 +251,14 @@ function renderPage(): string {
     <el-table-column label="Provider" width="140">
       <template #default="scope">{{ scope.row.provider }}</template>
     </el-table-column>
-    <el-table-column label="输入 Tokens" width="140" align="right">
+    <el-table-column label="输入 Tokens" width="120" align="right">
       <template #default="scope">
         <span class="col-tk-in">{{ fmt(scope.row.input_tokens) }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="缓存" width="100" align="right">
+      <template #default="scope">
+        <span style="color:#7c3aed;font-variant-numeric:tabular-nums">{{ fmt(scope.row.cache_read_input_tokens || 0) }}</span>
       </template>
     </el-table-column>
     <el-table-column label="输出 Tokens" width="140" align="right">
@@ -311,7 +326,7 @@ var app = Vue.createApp({
     var date = Vue.ref(localDateStr(new Date()));
     var loading = Vue.ref(false);
     var error = Vue.ref("");
-    var total = Vue.reactive({ count: 0, input_tokens: 0, output_tokens: 0 });
+    var total = Vue.reactive({ count: 0, input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 });
     var records = Vue.ref([]);
     var models = Vue.ref([]);
     var currentPage = Vue.ref(1);
@@ -340,13 +355,14 @@ var app = Vue.createApp({
           var t = data.total || { count: 0, input_tokens: 0, output_tokens: 0 };
           total.count = t.count;
           total.input_tokens = t.input_tokens;
+          total.cache_read_input_tokens = t.cache_read_input_tokens || 0;
           total.output_tokens = t.output_tokens;
           models.value = data.models || [];
           records.value = data.records || [];
         })
         .catch(function(err) {
           error.value = "加载失败: " + err.message;
-          total.count = 0; total.input_tokens = 0; total.output_tokens = 0;
+          total.count = 0; total.input_tokens = 0; total.cache_read_input_tokens = 0; total.output_tokens = 0;
           models.value = [];
           records.value = [];
         })
