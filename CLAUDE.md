@@ -24,7 +24,6 @@ src/
 ├── model-router.ts               # 模型路由：tier 映射 + 显式 provider/ 前缀解析
 ├── sse.ts                        # Anthropic SSE 事件构建器
 ├── db.ts                         # SQLite egress_log + insertEgress + queryStats
-├── stats-cli.ts                  # CLI 统计查询工具
 ├── routes/
 │   ├── messages.ts               # POST /v1/messages 核心处理器
 │   ├── health.ts                 # GET /health
@@ -111,7 +110,7 @@ id | sent_at | gateway_model | provider | provider_model
 
 - 流结束后通过 `StreamHandle.usage` Promise 获取真实用量
 - 上游未返回 usage 时 fallback 到字符估算（仅 output）
-- 查询：`npx stats` (总量) / `npx stats --by-model` (按模型)
+- 查询：访问 `/stats` 页面查看统计 / `/api/stats` 获取 JSON 数据
 
 ## 开发命令
 
@@ -120,7 +119,6 @@ npm run dev        # tsx watch src/index.ts
 npm start          # tsx --env-file=.env src/index.ts
 npm run build      # tsc
 npm run typecheck  # tsc --noEmit
-npm run stats      # node dist/stats-cli.js
 npm test           # vitest run
 ```
 
@@ -131,11 +129,10 @@ VBS 后台启动（静默无窗口）：
 - 双击 `.vbs` 或 `cscript //nologo scripts/start-proxy.vbs` 启动
 - 后端：编译后的 `dist/` 目录
 
-重新打包部署：
+重启服务（始终使用此脚本）：
 ```bash
-npm run build          # 编译 TypeScript
-taskkill //F //PID <PID>  # 停旧进程（netstat -ano | grep 8787 查 PID）
-cscript //nologo scripts/start-proxy.vbs  # 静默启动
+npm run build                  # 编译 TypeScript
+scripts/restart-proxy.bat      # 重启服务
 ```
 
 ## 设计约束

@@ -4,8 +4,9 @@ import type { Provider } from "./providers/base.js";
 import { handleHealth } from "./routes/health.js";
 import { handleModels } from "./routes/models.js";
 import { handleMessages } from "./routes/messages.js";
+import { handleStatsApi, handleStatsPage } from "./routes/stats.js";
 
-type RouteHandler = (
+export type RouteHandler = (
   req: IncomingMessage,
   res: ServerResponse,
   config: Config,
@@ -46,6 +47,8 @@ function timingSafeEqual(a: string, b: string): boolean {
 /** Route registry: "METHOD /path" → handler */
 const routes = new Map<string, RouteHandler>([
   ["GET /health", handleHealth],
+  ["GET /stats", handleStatsPage],
+  ["GET /api/stats", handleStatsApi],
   ["GET /v1/models", handleModels],
   ["POST /v1/messages", handleMessages],
 ]);
@@ -76,7 +79,7 @@ export function createApp(
     }
 
     // Auth check (skip for health)
-    if (path !== "/health" && !checkAuth(req, config)) {
+    if (path !== "/health" && path !== "/stats" && path !== "/api/stats" && !checkAuth(req, config)) {
       sendJson(res, 401, {
         error: { type: "authentication_error", message: "Invalid API key" },
       });

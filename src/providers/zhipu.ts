@@ -52,6 +52,8 @@ export class ZhipuProvider implements Provider {
         };
       }
 
+      upstreamBody.stream = true;
+
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -74,82 +76,123 @@ export class ZhipuProvider implements Provider {
         throw new Error("Zhipu returned empty response body");
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          raw += decoder.decode(value, { stream: true });
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      const contentType = (response.headers.get("content-type") || "").toLowerCase();
 
       let capturedUsage: Usage = { input_tokens: 0, output_tokens: 0 };
 
-      // Try full JSON response first (non-streaming), then SSE fallback
-      try {
-        const json = JSON.parse(raw);
-        const u = json?.usage;
-        if (u) {
-          capturedUsage.input_tokens = typeof u.input_tokens === "number" ? u.input_tokens : 0;
-          capturedUsage.output_tokens = typeof u.output_tokens === "number" ? u.output_tokens : 0;
-        }
+      if (contentType.includes("text/event-stream")) {
+        // Stream SSE events as they arrive — no buffering
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let eventType = "";
 
-        const msgId = json.id || `msg_${Date.now()}`;
-        const model = json.model || request.model;
-        yield messageStart(msgId, model, capturedUsage.input_tokens);
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
 
-        let bi = 0;
-        for (const block of json.content ?? []) {
-          if (block.type === "thinking") {
-            yield contentBlockStart(bi, "thinking");
-            yield contentBlockDelta(bi, "thinking_delta", { thinking: block.thinking ?? "" });
-            yield contentBlockStop(bi);
-          } else if (block.type === "text") {
-            yield contentBlockStart(bi, "text");
-            yield contentBlockDelta(bi, "text_delta", { text: block.text ?? "" });
-            yield contentBlockStop(bi);
-          } else if (block.type === "tool_use") {
-            yield contentBlockStart(bi, "tool_use", { id: block.id, name: block.name, input: {} });
-            if (block.input) {
-              yield contentBlockDelta(bi, "input_json_delta", { partial_json: JSON.stringify(block.input) });
-            }
-            yield contentBlockStop(bi);
-          }
-          bi++;
-        }
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
 
-        if (bi === 0) {
-          yield contentBlockStart(0, "text");
-          yield contentBlockDelta(0, "text_delta", { text: " " });
-          yield contentBlockStop(0);
-        }
-
-        const stopReason = json.stop_reason === "end_turn" ? "end_turn"
-          : json.stop_reason === "max_tokens" ? "max_tokens"
-          : "end_turn";
-        yield messageDelta(stopReason, capturedUsage.output_tokens, capturedUsage.input_tokens);
-        yield messageStop();
-      } catch {
-        // Not JSON — try SSE streaming passthrough
-        const lines = raw.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const dataStr = line.slice(6);
-            try {
-              const payload = JSON.parse(dataStr);
-              const plUsage = payload?.message?.usage || payload?.usage;
-              if (plUsage && typeof plUsage === "object") {
-                if (typeof plUsage.input_tokens === "number") capturedUsage.input_tokens = plUsage.input_tokens;
-                if (typeof plUsage.output_tokens === "number") capturedUsage.output_tokens = plUsage.output_tokens;
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7);
+              } else if (line.startsWith("data: ")) {
+                const dataStr = line.slice(6);
+                try {
+                  const payload = JSON.parse(dataStr);
+                  const plUsage = payload?.message?.usage || payload?.usage;
+                  if (plUsage && typeof plUsage === "object") {
+                    if (typeof plUsage.input_tokens === "number") capturedUsage.input_tokens = plUsage.input_tokens;
+                    if (typeof plUsage.output_tokens === "number") capturedUsage.output_tokens = plUsage.output_tokens;
+                  }
+                } catch { /* skip parse errors */ }
+                yield `event: ${eventType}\ndata: ${dataStr}\n\n`;
               }
-            } catch { /* skip parse errors */ }
-            yield `data: ${dataStr}\n\n`;
-          } else if (line.startsWith("event: ")) {
-            yield `${line}\n`;
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      } else {
+        // Non-streaming JSON — buffer all, then build Anthropic SSE events
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let raw = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            raw += decoder.decode(value, { stream: true });
+          }
+        } finally {
+          reader.releaseLock();
+        }
+
+        try {
+          const json = JSON.parse(raw);
+          const u = json?.usage;
+          if (u) {
+            capturedUsage.input_tokens = typeof u.input_tokens === "number" ? u.input_tokens : 0;
+            capturedUsage.output_tokens = typeof u.output_tokens === "number" ? u.output_tokens : 0;
+          }
+
+          const msgId = json.id || `msg_${Date.now()}`;
+          const model = json.model || request.model;
+          yield messageStart(msgId, model, capturedUsage.input_tokens);
+
+          let bi = 0;
+          for (const block of json.content ?? []) {
+            if (block.type === "thinking") {
+              yield contentBlockStart(bi, "thinking");
+              yield contentBlockDelta(bi, "thinking_delta", { thinking: block.thinking ?? "" });
+              yield contentBlockStop(bi);
+            } else if (block.type === "text") {
+              yield contentBlockStart(bi, "text");
+              yield contentBlockDelta(bi, "text_delta", { text: block.text ?? "" });
+              yield contentBlockStop(bi);
+            } else if (block.type === "tool_use") {
+              yield contentBlockStart(bi, "tool_use", { id: block.id, name: block.name, input: {} });
+              if (block.input) {
+                yield contentBlockDelta(bi, "input_json_delta", { partial_json: JSON.stringify(block.input) });
+              }
+              yield contentBlockStop(bi);
+            }
+            bi++;
+          }
+
+          if (bi === 0) {
+            yield contentBlockStart(0, "text");
+            yield contentBlockDelta(0, "text_delta", { text: " " });
+            yield contentBlockStop(0);
+          }
+
+          const stopReason = json.stop_reason === "end_turn" ? "end_turn"
+            : json.stop_reason === "max_tokens" ? "max_tokens"
+            : "end_turn";
+          yield messageDelta(stopReason, capturedUsage.output_tokens, capturedUsage.input_tokens);
+          yield messageStop();
+        } catch {
+          // Last resort: try SSE passthrough on buffered data
+          const lines = raw.split("\n");
+          let event = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              event = line.slice(7);
+            } else if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6);
+              try {
+                const payload = JSON.parse(dataStr);
+                const plUsage = payload?.message?.usage || payload?.usage;
+                if (plUsage && typeof plUsage === "object") {
+                  if (typeof plUsage.input_tokens === "number") capturedUsage.input_tokens = plUsage.input_tokens;
+                  if (typeof plUsage.output_tokens === "number") capturedUsage.output_tokens = plUsage.output_tokens;
+                }
+              } catch { /* skip parse errors */ }
+              yield `event: ${event}\ndata: ${dataStr}\n\n`;
+            }
           }
         }
       }

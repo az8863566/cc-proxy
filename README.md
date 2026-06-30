@@ -89,11 +89,7 @@ SQLite `data/egress.db`，记录每次请求的 token 用量：
 id | sent_at | gateway_model | provider | provider_model | input_tokens | output_tokens | status
 ```
 
-查询：
-```bash
-npm run stats              # 总量
-npm run stats -- --by-model  # 按模型
-```
+查询：访问 `http://localhost:8787/stats` 查看统计页面，或 `http://localhost:8787/api/stats` 获取 JSON。
 
 ## 开发
 
@@ -114,7 +110,6 @@ src/
 ├── model-router.ts            # 模型路由：tier 映射 + provider 前缀解析
 ├── sse.ts                     # Anthropic SSE 事件构建器
 ├── db.ts                      # SQLite egress_log
-├── stats-cli.ts               # CLI 统计查询
 ├── routes/
 │   ├── messages.ts            # POST /v1/messages
 │   ├── health.ts              # GET /health

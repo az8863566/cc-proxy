@@ -70,6 +70,55 @@ export interface StatsRow {
   gateway_model?: string;
 }
 
+export interface DetailRecord {
+  sent_at: string;
+  provider_model: string;
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface ModelSummary {
+  provider_model: string;
+  provider: string;
+  count: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export function queryRecordsByRange(since: string, until: string): DetailRecord[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT sent_at, provider_model, provider,
+              COALESCE(input_tokens, 0) AS input_tokens,
+              COALESCE(output_tokens, 0) AS output_tokens
+       FROM egress_log
+       WHERE sent_at >= @since AND sent_at < @until
+       ORDER BY sent_at DESC`,
+    )
+    .all({ since, until }) as DetailRecord[];
+}
+
+export function queryModelSummaryByRange(
+  since: string,
+  until: string,
+): ModelSummary[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT provider_model, provider,
+              COUNT(*) AS count,
+              COALESCE(SUM(input_tokens), 0) AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens
+       FROM egress_log
+       WHERE sent_at >= @since AND sent_at < @until
+       GROUP BY provider, provider_model
+       ORDER BY count DESC`,
+    )
+    .all({ since, until }) as ModelSummary[];
+}
+
 export function queryStats(filter: StatsFilter): StatsRow[] {
   const db = getDb();
   const conditions: string[] = [];

@@ -8,7 +8,6 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
-    "stats": "node dist/stats-cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
